@@ -448,11 +448,15 @@ fn route_claude_hook(
     let tool_name = payload.tool_name.as_str();
     // Resolve parent instance
     let resolve_start = Instant::now();
-    let (instance_name, updates, _is_matched_resume) = common::init_hook_context(
+    // Main-thread root hook (no agent_id): opt into conservative historical-process
+    // recovery. Subagent hooks carry agent_id and are routed above, so they never
+    // reach this call and can never trigger a rebind.
+    let (instance_name, updates, _is_matched_resume) = common::init_hook_context_with_policy(
         db,
         ctx,
         &session_id,
         payload.transcript_path.as_deref().unwrap_or(""),
+        common::RebindPolicy::AllowRootRebind,
     );
     timing.resolve_ms = Some(resolve_start.elapsed().as_secs_f64() * 1000.0);
 
