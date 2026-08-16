@@ -930,11 +930,97 @@ pub(crate) fn load_claude_identity_evidence(
 /// when the session is unbound or its binding has not yet been validated.
 ///
 /// Returns (instance_name, metadata_updates, is_matched_resume).
+///
+/// The historical-process branch fails closed by default. The main-thread root
+/// hook opts into conservative auto-recovery via [`init_hook_context_with_policy`]
+/// with [`RebindPolicy::AllowRootRebind`].
 pub fn init_hook_context(
     db: &HcomDb,
     ctx: &HcomContext,
     session_id: &str,
     transcript_path: &str,
+) -> (Option<String>, serde_json::Map<String, Value>, bool) {
+    init_hook_context_with_policy(
+        db,
+        ctx,
+        session_id,
+        transcript_path,
+        RebindPolicy::FailClosed,
+    )
+}
+
+/// Policy for the historical-process branch of [`init_hook_context_with_policy`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebindPolicy {
+    /// Preserve the fail-closed rejection (subagent validation, `hcom start`, tests).
+    FailClosed,
+    /// Permit a conservative re-home of the process-token owner onto the live
+    /// session. Sound only on the main-thread root hook, where `agent_id` is
+    /// absent by construction (subagent hooks are routed earlier and never reach
+    /// this branch), so the process token reliably identifies the main body.
+    AllowRootRebind,
+}
+
+/// Conservative recovery for a historical-process wake on the root hook path.
+///
+/// Reached only when a main-thread hook (no `agent_id`) fires for a live session
+/// whose process token was last bound to a *different* session — the ordinary
+/// signature of the main body switching sessions (native `/resume`, compaction).
+/// Re-home the process-token owner onto the live session so delivery resumes,
+/// reusing the audited [`crate::instance_binding::bind_session_to_process`]. Decline
+/// (returning `None`, i.e. fall back to the fail-closed rejection) whenever the
+/// re-home could steal identity from a genuinely-live sibling.
+fn attempt_historical_rebind(
+    db: &HcomDb,
+    ctx: &HcomContext,
+    session_id: &str,
+    evidence: &ClaudeIdentityEvidence,
+) -> Option<String> {
+    let owner = evidence.process_owner.as_deref()?;
+    let process_id = ctx
+        .process_id
+        .as_deref()
+        .filter(|value| !value.is_empty())?;
+
+    // The live session must be unclaimed (defensive: the caller already required
+    // session_owner to be None before reaching the historical branch).
+    if matches!(db.get_session_binding(session_id), Ok(Some(_))) {
+        return None;
+    }
+
+    // Never steal an identity that has legitimately moved on: if `owner` is a live
+    // body already homed on some *third* session (differing from both the live
+    // session and the process's last-recorded session), decline.
+    let recorded_session = evidence.process_session_id.as_deref().unwrap_or("");
+    if let Ok(Some(row)) = db.get_instance_full(owner) {
+        let live =
+            row.status == crate::shared::ST_ACTIVE || row.status == crate::shared::ST_LISTENING;
+        let current = row.session_id.as_deref().unwrap_or("");
+        if live && !current.is_empty() && current != session_id && current != recorded_session {
+            return None;
+        }
+    }
+
+    let rebound =
+        crate::instance_binding::bind_session_to_process(db, session_id, Some(process_id))?;
+    let _ = db.log_life_event(
+        &rebound,
+        "historical_rebind_recovered",
+        "hook",
+        &format!("re-homed to live session {session_id} (was {recorded_session})"),
+        None,
+    );
+    Some(rebound)
+}
+
+/// As [`init_hook_context`], but with an explicit historical-rebind policy so the
+/// safety boundary is visible at each call site.
+pub fn init_hook_context_with_policy(
+    db: &HcomDb,
+    ctx: &HcomContext,
+    session_id: &str,
+    transcript_path: &str,
+    policy: RebindPolicy,
 ) -> (Option<String>, serde_json::Map<String, Value>, bool) {
     let start = Instant::now();
     let evidence = match load_claude_identity_evidence(
@@ -1006,19 +1092,45 @@ pub fn init_hook_context(
                     );
                     None
                 } else if historical_process_binding {
-                    log::log_warn(
-                        "hooks",
-                        "init_hook_context.historical_process_rejected",
-                        &format!(
-                            "session_id={} transcript_path={} process_id={:?} process_session_id={:?} process_owner={:?}",
-                            session_id,
-                            transcript_path,
-                            ctx.process_id,
-                            evidence.process_session_id,
-                            evidence.process_owner,
-                        ),
-                    );
-                    None
+                    if matches!(policy, RebindPolicy::AllowRootRebind)
+                        && let Some(rebound) =
+                            attempt_historical_rebind(db, ctx, session_id, &evidence)
+                    {
+                        log::log_info(
+                            "hooks",
+                            "init_hook_context.historical_process_recovered",
+                            &format!(
+                                "session_id={} process_id={:?} rebound_owner={} process_session_id={:?}",
+                                session_id, ctx.process_id, rebound, evidence.process_session_id,
+                            ),
+                        );
+                        Some(rebound)
+                    } else {
+                        log::log_warn(
+                            "hooks",
+                            "init_hook_context.historical_process_rejected",
+                            &format!(
+                                "session_id={} transcript_path={} process_id={:?} process_session_id={:?} process_owner={:?}",
+                                session_id,
+                                transcript_path,
+                                ctx.process_id,
+                                evidence.process_session_id,
+                                evidence.process_owner,
+                            ),
+                        );
+                        if let Some(owner) = evidence.process_owner.as_deref() {
+                            let _ = db.log_life_event(
+                                owner,
+                                "historical_rebind_rejected",
+                                "hook",
+                                &format!(
+                                    "declined auto-rebind for live session {session_id}; kill and resume to retry"
+                                ),
+                                None,
+                            );
+                        }
+                        None
+                    }
                 } else {
                     evidence.process_owner.clone()
                 }
@@ -2167,8 +2279,96 @@ mod tests {
             .unwrap();
         let ctx = context_with_process_id(dir.path(), Some("process-restored"));
 
+        // Default policy (used by the wrapper, hcom start, and subagent validation)
+        // still fails closed on a historical process binding.
         let (owner, _, _) = init_hook_context(&db, &ctx, "session-new", "");
         assert!(owner.is_none());
+    }
+
+    #[test]
+    fn root_rebind_recovers_rotated_session() {
+        // Main-thread session rotation: the owner's process token last recorded
+        // session-old, but the live hook fires for an unbound session-new. The
+        // root hook re-homes the owner instead of parking delivery.
+        let (dir, db) = make_test_db();
+        insert_bound_claude_instance(&db, "lava", "session-old", "");
+        db.set_process_binding("process-restored", "session-old", "lava")
+            .unwrap();
+        let ctx = context_with_process_id(dir.path(), Some("process-restored"));
+
+        let (owner, _, _) = init_hook_context_with_policy(
+            &db,
+            &ctx,
+            "session-new",
+            "",
+            RebindPolicy::AllowRootRebind,
+        );
+        assert_eq!(
+            owner.as_deref(),
+            Some("lava"),
+            "root hook should re-home the owner"
+        );
+        assert_eq!(
+            db.get_session_binding("session-new").unwrap().as_deref(),
+            Some("lava"),
+            "live session must now bind to the recovered owner"
+        );
+        assert_eq!(
+            db.get_instance_full("lava")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("session-new"),
+        );
+        let recovered: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE instance = 'lava' AND type = 'life' \
+                 AND json_extract(data, '$.action') = 'historical_rebind_recovered'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recovered, 1, "recovery must emit an observable life event");
+    }
+
+    #[test]
+    fn root_rebind_declines_when_owner_live_on_third_session() {
+        // The owner is a live body already homed on a third session; re-homing it
+        // onto session-new would steal an identity that legitimately moved on.
+        let (dir, db) = make_test_db();
+        insert_bound_claude_instance(&db, "lava", "session-third", "");
+        db.set_process_binding("process-restored", "session-old", "lava")
+            .unwrap();
+        let ctx = context_with_process_id(dir.path(), Some("process-restored"));
+
+        let (owner, _, _) = init_hook_context_with_policy(
+            &db,
+            &ctx,
+            "session-new",
+            "",
+            RebindPolicy::AllowRootRebind,
+        );
+        assert!(
+            owner.is_none(),
+            "must not steal an owner live on a third session"
+        );
+        assert_eq!(
+            db.get_session_binding("session-third").unwrap().as_deref(),
+            Some("lava"),
+            "the owner's real session binding must be untouched"
+        );
+        let rejected: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE instance = 'lava' AND type = 'life' \
+                 AND json_extract(data, '$.action') = 'historical_rebind_rejected'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rejected, 1, "a declined rebind must be observable");
     }
 
     #[test]
