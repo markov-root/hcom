@@ -595,7 +595,7 @@ pub fn set_status(
     // it doesn't emit duplicate status events (~30% of events for omp otherwise).
     let is_pi_family = matches!(
         current_data.as_ref().map(|d| d.tool.as_str()),
-        Some("pi") | Some("omp")
+        Some("pi") | Some("omp") | Some("prime")
     );
     if is_pi_family && !status_event_changed && msg_ts.is_empty() {
         return;

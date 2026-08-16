@@ -117,6 +117,42 @@ pub(crate) const OMP_REJECTED_ARGS: &[RejectedArg] = &[
     },
 ];
 
+// Prime Agent is a Pi fork with the same interactive extension host hcom's
+// delivery depends on; reject the same hazards as OMP (plus Prime's `-ne`
+// short form of `--no-extensions`).
+pub(crate) const PRIME_REJECTED_ARGS: &[RejectedArg] = &[
+    RejectedArg {
+        token: "-p",
+        reason: "runs non-interactively and exits",
+        kind: RejectedArgKind::Flag,
+    },
+    RejectedArg {
+        token: "--print",
+        reason: "runs non-interactively and exits",
+        kind: RejectedArgKind::Flag,
+    },
+    RejectedArg {
+        token: "--mode",
+        reason: "can disable the interactive extension host used by hcom delivery",
+        kind: RejectedArgKind::Flag,
+    },
+    RejectedArg {
+        token: "--no-extensions",
+        reason: "prevents hcom's delivery extension from loading",
+        kind: RejectedArgKind::Flag,
+    },
+    RejectedArg {
+        token: "-ne",
+        reason: "prevents hcom's delivery extension from loading",
+        kind: RejectedArgKind::Flag,
+    },
+    RejectedArg {
+        token: "acp",
+        reason: "starts an ACP stdio server instead of the interactive TUI",
+        kind: RejectedArgKind::RootSubcommand,
+    },
+];
+
 pub(crate) const GEMINI_REJECTED_ARGS: &[RejectedArg] = &[
     RejectedArg {
         token: "-p",

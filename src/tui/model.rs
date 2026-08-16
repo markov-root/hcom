@@ -84,6 +84,7 @@ pub enum Tool {
     Kilo,
     Pi,
     Omp,
+    Prime,
     Antigravity,
     Cursor,
     Kimi,
@@ -104,6 +105,7 @@ impl Tool {
             Self::Kilo => Some(crate::tool::Tool::Kilo),
             Self::Pi => Some(crate::tool::Tool::Pi),
             Self::Omp => Some(crate::tool::Tool::Omp),
+            Self::Prime => Some(crate::tool::Tool::Prime),
             Self::Antigravity => Some(crate::tool::Tool::Antigravity),
             Self::Cursor => Some(crate::tool::Tool::Cursor),
             Self::Kimi => Some(crate::tool::Tool::Kimi),
@@ -138,7 +140,8 @@ impl Tool {
             Self::OpenCode => Self::Kilo,
             Self::Kilo => Self::Pi,
             Self::Pi => Self::Omp,
-            Self::Omp => Self::Antigravity,
+            Self::Omp => Self::Prime,
+            Self::Prime => Self::Antigravity,
             Self::Antigravity => Self::Cursor,
             Self::Cursor => Self::Kimi,
             Self::Kimi => Self::Copilot,
@@ -155,7 +158,8 @@ impl Tool {
             Self::Gemini => Self::Claude,
             Self::Codex => Self::Gemini,
             Self::OpenCode => Self::Codex,
-            Self::Antigravity => Self::Omp,
+            Self::Antigravity => Self::Prime,
+            Self::Prime => Self::Omp,
             Self::Omp => Self::Pi,
             Self::Pi => Self::Kilo,
             Self::Kilo => Self::OpenCode,
@@ -1267,7 +1271,8 @@ mod tests {
         assert_eq!(Tool::OpenCode.next(), Tool::Kilo);
         assert_eq!(Tool::Kilo.next(), Tool::Pi);
         assert_eq!(Tool::Pi.next(), Tool::Omp);
-        assert_eq!(Tool::Omp.next(), Tool::Antigravity);
+        assert_eq!(Tool::Omp.next(), Tool::Prime);
+        assert_eq!(Tool::Prime.next(), Tool::Antigravity);
         assert_eq!(Tool::Antigravity.next(), Tool::Cursor);
         assert_eq!(Tool::Cursor.next(), Tool::Kimi);
         assert_eq!(Tool::Kimi.next(), Tool::Copilot);
@@ -1280,7 +1285,8 @@ mod tests {
         assert_eq!(Tool::Copilot.prev(), Tool::Kimi);
         assert_eq!(Tool::Kimi.prev(), Tool::Cursor);
         assert_eq!(Tool::Cursor.prev(), Tool::Antigravity);
-        assert_eq!(Tool::Antigravity.prev(), Tool::Omp);
+        assert_eq!(Tool::Antigravity.prev(), Tool::Prime);
+        assert_eq!(Tool::Prime.prev(), Tool::Omp);
         assert_eq!(Tool::Omp.prev(), Tool::Pi);
         assert_eq!(Tool::Pi.prev(), Tool::Kilo);
         assert_eq!(Tool::Kilo.prev(), Tool::OpenCode);

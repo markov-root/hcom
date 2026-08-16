@@ -8,6 +8,21 @@ import { createServer, type Server } from "node:net";
 const HCOM_DIR = process.env.HCOM_DIR || `${homedir()}/.hcom`;
 const LOG_PATH = `${HCOM_DIR}/.tmp/logs/hcom.log`;
 
+// hcom identity, captured at module-load time. Pi loads this file directly so
+// process.env is intact when handlers fire. But forks that host extensions inside
+// a session daemon (Prime Agent) only expose the launcher's forwarded env during
+// the synchronous extension-load window — by the time the async session_start
+// handler runs, process.env no longer carries HCOM_*. Capturing here (and passing
+// the values to the `hcom` CLI below) makes bind work regardless of the host's
+// env-window timing. Requires the daemon to allowlist these keys (see prime-agent
+// DAEMON_CLIENT_ENV_KEYS); harmless and equivalent for Pi itself.
+const HCOM_LAUNCHED = process.env.HCOM_LAUNCHED;
+const HCOM_IDENTITY_ENV: Record<string, string> = {};
+for (const key of ["HCOM_LAUNCHED", "HCOM_PROCESS_ID", "HCOM_DIR", "HCOM_INSTANCE_NAME"]) {
+	const value = process.env[key];
+	if (value !== undefined) HCOM_IDENTITY_ENV[key] = value;
+}
+
 type HcomResult = {
 	code: number;
 	stdout: string;
@@ -36,7 +51,10 @@ function log(
 
 function hcom(args: string[]): Promise<HcomResult> {
 	return new Promise((resolve) => {
-		const child = spawn("hcom", args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("hcom", args, {
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, ...HCOM_IDENTITY_ENV },
+		});
 		let stdout = "";
 		let stderr = "";
 		child.stdout.setEncoding("utf8");
@@ -139,7 +157,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 	async function bindIdentity(ctx: ExtensionContext): Promise<void> {
 		currentCtx = ctx;
 		if (instanceName || bindingPromise) return bindingPromise ?? Promise.resolve();
-		if (process.env.HCOM_LAUNCHED !== "1") return;
+		if (HCOM_LAUNCHED !== "1") return;
 		bindingPromise = (async () => {
 			try {
 				const sid = ctx.sessionManager.getSessionId();

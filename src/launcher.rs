@@ -24,7 +24,8 @@ use crate::shared::tool_detection::tool_marker_vars;
 use crate::terminal;
 use crate::tools::launch_arg_validation::{
     ANTIGRAVITY_REJECTED_ARGS, GEMINI_REJECTED_ARGS, KILO_REJECTED_ARGS, KIMI_REJECTED_ARGS,
-    OMP_REJECTED_ARGS, OPENCODE_REJECTED_ARGS, PI_REJECTED_ARGS, validate_rejected_args,
+    OMP_REJECTED_ARGS, OPENCODE_REJECTED_ARGS, PI_REJECTED_ARGS, PRIME_REJECTED_ARGS,
+    validate_rejected_args,
 };
 use crate::tools::{
     codex_preprocessing, copilot_preprocessing, cursor_preprocessing, opencode_preprocessing,
@@ -45,6 +46,7 @@ pub enum LaunchTool {
     Kimi,
     Copilot,
     Omp,
+    Prime,
 }
 
 impl LaunchTool {
@@ -59,6 +61,7 @@ impl LaunchTool {
             "kilo" | "kilocode" => Ok(LaunchTool::Kilo),
             "pi" | "pi-agent" => Ok(LaunchTool::Pi),
             "omp" | "omp-agent" => Ok(LaunchTool::Omp),
+            "prime" | "prime-agent" => Ok(LaunchTool::Prime),
             "antigravity" | "agy" => Ok(LaunchTool::Antigravity),
             "cursor" | "cursor-agent" => Ok(LaunchTool::Cursor),
             "kimi" => Ok(LaunchTool::Kimi),
@@ -77,6 +80,7 @@ impl LaunchTool {
             LaunchTool::Kilo => "kilo",
             LaunchTool::Pi => "pi",
             LaunchTool::Omp => "omp",
+            LaunchTool::Prime => "prime",
             LaunchTool::Antigravity => "antigravity",
             LaunchTool::Cursor => "cursor",
             LaunchTool::Kimi => "kimi",
@@ -97,6 +101,7 @@ impl LaunchTool {
             LaunchTool::Kilo => crate::tool::Tool::Kilo,
             LaunchTool::Pi => crate::tool::Tool::Pi,
             LaunchTool::Omp => crate::tool::Tool::Omp,
+            LaunchTool::Prime => crate::tool::Tool::Prime,
             LaunchTool::Antigravity => crate::tool::Tool::Antigravity,
             LaunchTool::Cursor => crate::tool::Tool::Cursor,
             LaunchTool::Kimi => crate::tool::Tool::Kimi,
@@ -167,6 +172,7 @@ impl LaunchBackend {
             | LaunchTool::Kilo
             | LaunchTool::Pi
             | LaunchTool::Omp
+            | LaunchTool::Prime
             | LaunchTool::Antigravity
             | LaunchTool::Cursor
             | LaunchTool::Kimi
@@ -445,6 +451,7 @@ fn isolated_tool_config_dir(tool: &LaunchTool) -> Option<std::path::PathBuf> {
         crate::tool::Tool::Kilo => ".kilo",
         crate::tool::Tool::Pi => ".pi",
         crate::tool::Tool::Omp => ".omp",
+        crate::tool::Tool::Prime => ".prime",
         crate::tool::Tool::Cursor => ".cursor",
         crate::tool::Tool::Kimi => ".kimi",
         crate::tool::Tool::Copilot => ".copilot",
@@ -680,7 +687,9 @@ fn ensure_hooks_installed(tool: &LaunchTool, include_permissions: bool) -> Resul
             );
             bail!("Failed to setup Kilo Code plugin. Run: hcom hooks add kilo\n{diag}");
         }
-        LaunchTool::Pi => {
+        // Prime Agent reuses Pi's plugin (injected via `-e`, see
+        // inject_pi_family_extension_args); install the same file.
+        LaunchTool::Pi | LaunchTool::Prime => {
             if crate::hooks::pi::ensure_pi_plugin_installed() {
                 return Ok(());
             }
@@ -1581,11 +1590,14 @@ fn validate_launch_count(tool: &LaunchTool, count: usize) -> Result<()> {
     Ok(())
 }
 
-fn inject_omp_extension_args(tool: &LaunchTool, args: &mut Vec<String>) {
-    if !matches!(tool, LaunchTool::Omp) {
-        return;
-    }
-    let extension_args = crate::hooks::omp::extension_inject_args();
+fn inject_extension_args(tool: &LaunchTool, args: &mut Vec<String>) {
+    // OMP and Prime Agent both load hcom's delivery extension via Pi's `-e`
+    // extension flag (Prime reuses the Pi plugin; see integration_spec::PRIME).
+    let extension_args = match tool {
+        LaunchTool::Omp => crate::hooks::omp::extension_inject_args(),
+        LaunchTool::Prime => crate::hooks::pi::extension_inject_args(),
+        _ => return,
+    };
     let plugin_path = extension_args
         .get(1)
         .map(String::as_str)
@@ -1809,6 +1821,12 @@ pub fn launch(db: &HcomDb, mut params: LaunchParams) -> Result<LaunchResult> {
             crate::hooks::omp::strip_managed_extension_args(persisted);
         }
     }
+    if matches!(normalized, LaunchTool::Prime) {
+        crate::hooks::pi::strip_managed_extension_args(&mut params.args);
+        if let Some(persisted) = params.persisted_args.as_mut() {
+            crate::hooks::pi::strip_managed_extension_args(persisted);
+        }
+    }
 
     // Capture the persistable args BEFORE any hcom launch injection below.
     // Resume replays only user/config args; workspace-trust injection
@@ -1824,7 +1842,7 @@ pub fn launch(db: &HcomDb, mut params: LaunchParams) -> Result<LaunchResult> {
 
     // Injected after the snapshot so the internal plugin path is never persisted;
     // resume re-injects the current path via the same call.
-    inject_omp_extension_args(&normalized, &mut params.args);
+    inject_extension_args(&normalized, &mut params.args);
 
     // Resolved here, before any trust injection, and threaded to
     // preprocess_codex_args below. Codex's hook-trust bypass is invocation-wide,
@@ -2222,7 +2240,11 @@ pub fn launch(db: &HcomDb, mut params: LaunchParams) -> Result<LaunchResult> {
                     )
                 }
 
-                LaunchTool::OpenCode | LaunchTool::Kilo | LaunchTool::Pi | LaunchTool::Omp => {
+                LaunchTool::OpenCode
+                | LaunchTool::Kilo
+                | LaunchTool::Pi
+                | LaunchTool::Omp
+                | LaunchTool::Prime => {
                     opencode_preprocessing::preprocess_opencode_env(
                         &mut instance_env,
                         base_tool,
@@ -2461,6 +2483,9 @@ pub(crate) fn validate_tool_args(tool: &LaunchTool, args: &[String]) -> Vec<Stri
         LaunchTool::Kilo => validate_rejected_args("Kilo", "hcom kilo", args, KILO_REJECTED_ARGS),
         LaunchTool::Pi => validate_rejected_args("Pi", "hcom pi", args, PI_REJECTED_ARGS),
         LaunchTool::Omp => validate_rejected_args("Oh My Pi", "hcom omp", args, OMP_REJECTED_ARGS),
+        LaunchTool::Prime => {
+            validate_rejected_args("Prime Agent", "hcom prime", args, PRIME_REJECTED_ARGS)
+        }
         LaunchTool::Antigravity => validate_rejected_args(
             "Antigravity",
             "hcom antigravity",
@@ -2733,12 +2758,24 @@ mod tests {
     #[test]
     fn omp_extension_args_are_injected_once() {
         let mut args = vec!["--model".to_string(), "opus".to_string()];
-        inject_omp_extension_args(&LaunchTool::Omp, &mut args);
+        inject_extension_args(&LaunchTool::Omp, &mut args);
         assert!(args.iter().any(|arg| arg == "-e"));
         assert!(args.iter().any(|arg| arg.ends_with("hcom.ts")));
 
         let once = args.clone();
-        inject_omp_extension_args(&LaunchTool::Omp, &mut args);
+        inject_extension_args(&LaunchTool::Omp, &mut args);
+        assert_eq!(args, once);
+    }
+
+    #[test]
+    fn prime_extension_args_are_injected_once() {
+        let mut args = vec!["--model".to_string(), "gpt-5.6-sol".to_string()];
+        inject_extension_args(&LaunchTool::Prime, &mut args);
+        assert!(args.iter().any(|arg| arg == "-e"));
+        assert!(args.iter().any(|arg| arg.ends_with("hcom.ts")));
+
+        let once = args.clone();
+        inject_extension_args(&LaunchTool::Prime, &mut args);
         assert_eq!(args, once);
     }
 

@@ -487,7 +487,8 @@ pub fn get_bootstrap(
             || tool == "antigravity"
             || tool == "kimi"
             || tool == "pi"
-            || tool == "omp")
+            || tool == "omp"
+            || tool == "prime")
             && ctx.is_launched)
     {
         parts.push(DELIVERY_AUTO);

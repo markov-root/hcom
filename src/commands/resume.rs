@@ -1041,6 +1041,8 @@ fn merge_resume_args(tool: &str, original: &[String], resume: &[String]) -> Vec<
         crate::tool::Tool::Copilot => merge_copilot_args(original, resume),
         crate::tool::Tool::Pi => merge_pi_args(original, resume),
         crate::tool::Tool::Omp => merge_omp_args(original, resume),
+        // Prime Agent uses OMP's `--resume`/`--fork` grammar (not Pi's `--session`).
+        crate::tool::Tool::Prime => merge_omp_args(original, resume),
         crate::tool::Tool::Adhoc => {
             unreachable!("Adhoc sessions do not support resume argument merging")
         }

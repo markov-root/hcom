@@ -1646,7 +1646,7 @@ pub fn run_delivery_loop(
     use std::str::FromStr;
     if matches!(
         Tool::from_str(&config.tool),
-        Ok(Tool::OpenCode | Tool::Kilo | Tool::Pi | Tool::Omp)
+        Ok(Tool::OpenCode | Tool::Kilo | Tool::Pi | Tool::Omp | Tool::Prime)
     ) {
         log_info(
             "native",
@@ -1915,7 +1915,7 @@ pub fn run_delivery_loop(
                         let text = match parsed_tool {
                             Some(Tool::Claude) | Some(Tool::Codex) | Some(Tool::Cursor)
                             | Some(Tool::Kimi) | Some(Tool::Copilot) | Some(Tool::Pi)
-                            | Some(Tool::Omp) => "<hcom>".to_string(),
+                            | Some(Tool::Omp) | Some(Tool::Prime) => "<hcom>".to_string(),
                             _ => build_wake_inject_text(db, &current_name, input_box_width),
                         };
 

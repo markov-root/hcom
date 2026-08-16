@@ -375,6 +375,9 @@ const PI_HELP_EXAMPLES: &[HelpEntry] =
 const OMP_HELP_EXAMPLES: &[HelpEntry] =
     &[("hcom omp --model claude-3-5-sonnet", "Use a specific model")];
 
+const PRIME_HELP_EXAMPLES: &[HelpEntry] =
+    &[("hcom prime --model gpt-5.6-sol", "Use a specific model")];
+
 const AGY_HELP_EXAMPLES: &[HelpEntry] = &[
     ("hcom antigravity", "Long-form alias"),
     ("hcom agy --sandbox", "Flags forwarded to agy"),
@@ -1004,6 +1007,78 @@ pub static OMP: IntegrationSpec = IntegrationSpec {
     },
 };
 
+pub static PRIME: IntegrationSpec = IntegrationSpec {
+    tool: Tool::Prime,
+    name: "prime",
+    label: "Prime Agent",
+    aliases: &["prime-agent"],
+    cli_binary: "prime-agent",
+    tui_prefix: "prm ",
+    adhoc_icon: None,
+    released: true,
+    // Prime Agent is a hard fork of Pi (imports `@earendil-works/pi-coding-agent`,
+    // emits the same extension lifecycle events), so it reuses Pi's plugin and
+    // hooks verbatim (see `shared_hooks_with: Some(Tool::Pi)` below). Its restyled
+    // TUI never prints Pi's `/ commands` marker (its status line shows
+    // `? for shortcuts`), so — like OMP — readiness is proven by the hcom
+    // extension's bind (`launch_ready_on_plugin_bind`), which is
+    // rendering-independent. Empty pattern => is_ready() is always true, so it
+    // never gates launch on scraped chrome; the plugin bind is authoritative.
+    ready_pattern: b"",
+    pty: PtySpec {
+        delivery_start_timeout_secs: 5,
+    },
+    instance_state_env: &[],
+    hooks: HooksSpec {
+        // Prime reuses Pi's plugin (src/pi_plugin/hcom.ts), which calls the
+        // `pi-*` hook commands; route them to Pi's handlers rather than
+        // registering a duplicate owner (same pattern as Antigravity borrowing
+        // Gemini's hooks and Kilo borrowing OpenCode's).
+        names: PI_HOOKS,
+        shared_hooks_with: Some(Tool::Pi),
+        invocation: HookInvocation::Argv,
+    },
+    gates: GatesSpec {
+        require_idle: false,
+        require_ready_prompt: false,
+        require_prompt_empty: false,
+        block_on_user_activity: false,
+        block_on_approval: true,
+        launch_requires_ready: true,
+        // Bind-driven readiness (see ready_pattern note above): the hcom
+        // extension's `kind='plugin'` notify endpoint is the authoritative,
+        // rendering-independent ready signal, exactly as for OMP.
+        launch_ready_on_plugin_bind: true,
+    },
+    launch: LaunchSpec {
+        args_env: Some("HCOM_PRIME_ARGS"),
+        // Prime Agent's home is `~/.prime/agent` and it ignores
+        // `PI_CODING_AGENT_DIR`; it honors `PRIME_AGENT_CODING_AGENT_DIR`. The
+        // plugin is injected explicitly via `-e` (see launcher), so discovery
+        // does not depend on this, but the isolated-config-dir plumbing uses it.
+        config_dir_env: Some("PRIME_AGENT_CODING_AGENT_DIR"),
+        initial_prompt: InitialPromptShape::Positional,
+        uses_pty_default: true,
+        max_launch_count: 10,
+        background: BackgroundMode::HeadlessPty,
+    },
+    resume: Some(ResumeSpec {
+        resume: ResumeArgs::Flag("--resume"),
+        // Prime Agent supports `--fork <id>` (mutually exclusive with --resume),
+        // same shape as Pi/OMP: Subcommand emits `["--fork", <id>]`.
+        fork: Some(ForkArgs::Subcommand("--fork")),
+    }),
+    help: HelpSpec {
+        unique_examples: PRIME_HELP_EXAMPLES,
+        extra_env: &[],
+    },
+    status_detail: StatusDetailSpec {
+        bash: &["bash"],
+        file: &["edit", "write"],
+        delegate: &[],
+    },
+};
+
 pub static COPILOT: IntegrationSpec = IntegrationSpec {
     tool: Tool::Copilot,
     name: "copilot",
@@ -1119,6 +1194,7 @@ pub static ALL: &[&IntegrationSpec] = &[
     &KILO,
     &PI,
     &OMP,
+    &PRIME,
     &ANTIGRAVITY,
     &CURSOR,
     &KIMI,
@@ -1136,6 +1212,7 @@ impl Tool {
             Tool::OpenCode => &OPENCODE,
             Tool::Kilo => &KILO,
             Tool::Omp => &OMP,
+            Tool::Prime => &PRIME,
             Tool::Pi => &PI,
             Tool::Antigravity => &ANTIGRAVITY,
             Tool::Cursor => &CURSOR,
@@ -1190,6 +1267,7 @@ mod tests {
             Tool::Copilot,
             Tool::Pi,
             Tool::Omp,
+            Tool::Prime,
             Tool::Adhoc,
         ] {
             let spec = tool.spec();
@@ -1256,7 +1334,8 @@ mod tests {
         assert!(names.contains(&"kimi"));
         assert!(names.contains(&"copilot"));
         assert!(names.contains(&"omp"));
-        assert_eq!(names.len(), 11);
+        assert!(names.contains(&"prime"));
+        assert_eq!(names.len(), 12);
     }
 
     #[test]

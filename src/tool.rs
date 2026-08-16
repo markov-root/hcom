@@ -22,6 +22,7 @@ pub enum Tool {
     Copilot,
     Pi,
     Omp,
+    Prime,
     Adhoc,
 }
 
@@ -105,6 +106,8 @@ impl Tool {
             }
             Tool::Pi => crate::hooks::pi::verify_pi_plugin_installed(),
             Tool::Omp => crate::hooks::omp::verify_omp_plugin_installed(),
+            // Prime Agent reuses Pi's plugin (see integration_spec::PRIME).
+            Tool::Prime => crate::hooks::pi::verify_pi_plugin_installed(),
             Tool::Adhoc => false,
         }
     }
@@ -139,7 +142,7 @@ impl Tool {
                 .map_err(|e| e.to_string()),
             Tool::Copilot => crate::hooks::copilot::try_setup_copilot_hooks(include_permissions)
                 .map_err(|e| e.to_string()),
-            Tool::Pi => match crate::hooks::pi::install_pi_plugin() {
+            Tool::Pi | Tool::Prime => match crate::hooks::pi::install_pi_plugin() {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(String::new()),
                 Err(e) => Err(e.to_string()),
@@ -171,7 +174,7 @@ impl Tool {
             Tool::Cursor => Ok(crate::hooks::cursor::remove_cursor_hooks()),
             Tool::Kimi => Ok(crate::hooks::kimi::remove_kimi_hooks()),
             Tool::Copilot => Ok(crate::hooks::copilot::remove_copilot_hooks()),
-            Tool::Pi => crate::hooks::pi::remove_pi_plugin()
+            Tool::Pi | Tool::Prime => crate::hooks::pi::remove_pi_plugin()
                 .map(|_| true)
                 .map_err(|e| e.to_string()),
             Tool::Omp => crate::hooks::omp::remove_omp_plugin()
@@ -194,7 +197,7 @@ impl Tool {
             Tool::Cursor => crate::hooks::cursor::get_cursor_hooks_path(),
             Tool::Kimi => crate::hooks::kimi::get_kimi_settings_path(),
             Tool::Copilot => crate::hooks::copilot::get_copilot_hooks_path(),
-            Tool::Pi => crate::hooks::pi::get_pi_plugin_path(),
+            Tool::Pi | Tool::Prime => crate::hooks::pi::get_pi_plugin_path(),
             Tool::Omp => crate::hooks::omp::get_omp_plugin_path(),
             Tool::Adhoc => return String::new(),
         };
@@ -304,6 +307,19 @@ mod tests {
     fn omp_from_str() {
         assert_eq!("omp".parse::<Tool>(), Ok(Tool::Omp));
         assert_eq!("omp-agent".parse::<Tool>(), Ok(Tool::Omp));
+    }
+
+    #[test]
+    fn prime_from_str() {
+        assert_eq!("prime".parse::<Tool>(), Ok(Tool::Prime));
+        assert_eq!("prime-agent".parse::<Tool>(), Ok(Tool::Prime));
+    }
+
+    #[test]
+    fn prime_reuses_pi_hooks_without_owning_them() {
+        assert_eq!(Tool::Prime.hooks(), Tool::Pi.hooks());
+        assert!(!Tool::Prime.owns_hook("pi-start"));
+        assert_eq!(Tool::from_hook_name("pi-start"), Some(Tool::Pi));
     }
 
     #[test]

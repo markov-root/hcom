@@ -122,6 +122,7 @@ hcom_tool_predicate!("kimi", HCOM_TOOL_KIMI);
 hcom_tool_predicate!("copilot", HCOM_TOOL_COPILOT);
 hcom_tool_predicate!("pi", HCOM_TOOL_PI);
 hcom_tool_predicate!("omp", HCOM_TOOL_OMP);
+hcom_tool_predicate!("prime", HCOM_TOOL_PRIME);
 
 /// Detection precedence: native markers first, then hcom's explicit fallback.
 pub static TOOL_DETECTION_RULES: &[ToolDetectionRule] = &[
@@ -234,6 +235,11 @@ pub static TOOL_DETECTION_RULES: &[ToolDetectionRule] = &[
     ToolDetectionRule {
         tool: Tool::Omp,
         predicates: HCOM_TOOL_OMP,
+        clear_for_child: &["HCOM_TOOL"],
+    },
+    ToolDetectionRule {
+        tool: Tool::Prime,
+        predicates: HCOM_TOOL_PRIME,
         clear_for_child: &["HCOM_TOOL"],
     },
 ];

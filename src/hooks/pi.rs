@@ -27,6 +27,17 @@ fn has_flag(argv: &[String], flag: &str) -> bool {
     argv.iter().any(|a| a == flag)
 }
 
+/// Preserve the launcher-set tool identity. Prime Agent reuses this Pi plugin
+/// and its `pi-*` hooks (see `integration_spec::PRIME`), so a `pi-start` may be
+/// servicing a `prime` instance — don't clobber it back to "pi". Mirrors
+/// `opencode.rs::instance_tool` (OpenCode/Kilo share the OpenCode plugin).
+fn instance_tool(db: &HcomDb, instance_name: &str) -> &'static str {
+    match db.get_instance_full(instance_name) {
+        Ok(Some(instance)) if instance.tool == "prime" => "prime",
+        _ => "pi",
+    }
+}
+
 fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
     if let Err(e) = db.upsert_notify_endpoint(instance_name, "plugin", port) {
         log_error(
@@ -76,7 +87,7 @@ fn bootstrap_for(ctx: &HcomContext, db: &HcomDb, instance_name: &str) -> String 
         db,
         &ctx.hcom_dir,
         instance_name,
-        "pi",
+        instance_tool(db, instance_name),
         ctx.is_background,
         ctx.is_launched,
         &ctx.notes,
@@ -124,7 +135,10 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
     instance_binding::capture_and_store_launch_context(db, &instance_name);
 
     let mut updates = serde_json::Map::new();
-    updates.insert("tool".into(), serde_json::json!("pi"));
+    updates.insert(
+        "tool".into(),
+        serde_json::json!(instance_tool(db, &instance_name)),
+    );
     updates.insert("session_id".into(), serde_json::json!(&session_id));
     if let Some(path) = transcript_path.as_ref().filter(|p| !p.is_empty()) {
         updates.insert("transcript_path".into(), serde_json::json!(path));
@@ -261,7 +275,8 @@ fn handle_beforetool(db: &HcomDb, argv: &[String]) -> (i32, String) {
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     if !tool_name.is_empty() {
-        common::update_tool_status(db, &name, "pi", &tool_name, &input);
+        let tool = instance_tool(db, &name);
+        common::update_tool_status(db, &name, tool, &tool_name, &input);
     }
     (0, r#"{"decision":"allow"}"#.to_string())
 }
@@ -401,6 +416,79 @@ pub fn remove_pi_plugin() -> std::io::Result<()> {
         std::fs::remove_file(path)?;
     }
     Ok(())
+}
+
+fn is_hcom_owned(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|content| content.contains("customType: \"hcom-bootstrap\""))
+        .unwrap_or(false)
+}
+
+/// CLI args that inject hcom's Pi plugin via Pi's `-e <path>` extension flag.
+/// Used by forks (Prime Agent) whose home dir is not `~/.pi/agent` and which
+/// ignore `PI_CODING_AGENT_DIR`, so filesystem discovery of the dropped plugin
+/// does not reach them — the explicit `-e` path does. The plugin file itself is
+/// still written by [`install_pi_plugin`]/[`ensure_pi_plugin_installed`].
+pub fn extension_inject_args() -> Vec<String> {
+    vec![
+        "-e".to_string(),
+        get_pi_plugin_path().to_string_lossy().to_string(),
+    ]
+}
+
+/// Remove hcom's managed Pi extension injection (`-e <hcom.ts>` / `--extension
+/// …`, incl. the `=` forms) from a stored or replayed launch-arg vector,
+/// preserving every user-supplied extension and its ordering. Mirror of the OMP
+/// helper (see `hooks/omp/plugin.rs`); shared by Prime Agent, which reuses this
+/// plugin. Idempotent — callers strip stored args before snapshotting and
+/// reinjecting so a stale plugin path is not replayed alongside the current one.
+pub fn strip_managed_extension_args(args: &mut Vec<String>) {
+    let current = get_pi_plugin_path();
+    let is_managed = |value: &str| -> bool {
+        let path = std::path::Path::new(value);
+        if path == current.as_path() {
+            return true;
+        }
+        if is_hcom_owned(path) {
+            return true;
+        }
+        // Moved/missing managed file only: basename hcom.ts under an `extensions`
+        // dir. Gated on !exists so an EXISTING user `-e …/extensions/hcom.ts`
+        // with unrelated contents (which is_hcom_owned already rejected) is kept.
+        !path.exists()
+            && path.file_name().and_then(|n| n.to_str()) == Some(PLUGIN_FILENAME)
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                == Some("extensions")
+    };
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let tok = args[i].as_str();
+        if (tok == "-e" || tok == "--extension") && i + 1 < args.len() {
+            if is_managed(&args[i + 1]) {
+                i += 2;
+                continue;
+            }
+            out.push(args[i].clone());
+            out.push(args[i + 1].clone());
+            i += 2;
+            continue;
+        }
+        if let Some(value) = tok
+            .strip_prefix("--extension=")
+            .or_else(|| tok.strip_prefix("-e="))
+            && is_managed(value)
+        {
+            i += 1;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    *args = out;
 }
 
 #[cfg(test)]

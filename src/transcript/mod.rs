@@ -59,6 +59,7 @@ enum TranscriptDiscovery {
     CopilotSessionState,
     PiSessions,
     OmpSessions,
+    PrimeSessions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +104,12 @@ static TRANSCRIPT_PROFILES: &[TranscriptProfile] = &[
         tool: Tool::Omp,
         backend: TranscriptBackend::PiJsonl,
         discovery: TranscriptDiscovery::OmpSessions,
+    },
+    TranscriptProfile {
+        // Prime Agent is a Pi fork: same JSONL transcript format, own home dir.
+        tool: Tool::Prime,
+        backend: TranscriptBackend::PiJsonl,
+        discovery: TranscriptDiscovery::PrimeSessions,
     },
     TranscriptProfile {
         tool: Tool::Antigravity,
@@ -261,6 +268,11 @@ pub fn detect_tool_from_path(path: &str) -> Option<Tool> {
         || (lower.contains("/session-state/") && file_name == "events.jsonl")
     {
         Some(Tool::Copilot)
+    } else if lower.contains("/.prime/agent/sessions/") || lower.contains("/.prime/sessions/") {
+        // Prime Agent's own home tree. Bare `<uuid>.jsonl` like Pi; a custom
+        // PRIME_AGENT_CODING_AGENT_DIR outside `.prime/` is attributed by
+        // search-root provenance instead.
+        Some(Tool::Prime)
     } else if lower.contains("/.omp/") {
         // Covers the default tree (`/.omp/agent/sessions/`) and named-profile
         // trees (`/.omp/profiles/<name>/agent/sessions/`). XDG and
@@ -502,6 +514,27 @@ pub(crate) fn pi_session_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// Prime Agent session roots. Prime is a Pi fork with its own home
+/// (`~/.prime/agent/sessions`) and honors `PRIME_AGENT_CODING_AGENT_DIR`; it does
+/// not read Pi's `PI_CODING_AGENT_*` vars, so these roots are Prime-exclusive.
+pub(crate) fn prime_session_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut roots = Vec::new();
+    if let Ok(dir) = std::env::var("PRIME_AGENT_CODING_AGENT_DIR")
+        && !dir.is_empty()
+    {
+        let path = PathBuf::from(dir);
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        roots.push(resolved.join("sessions"));
+    }
+    roots.push(home.join(".prime").join("agent").join("sessions"));
+    roots
+}
+
 /// Filesystem roots searched by `transcript search --all` for a tool.
 /// Database-backed profiles return no roots and expose a database path through
 /// [`database_search_path`] instead.
@@ -535,6 +568,7 @@ pub fn disk_search_roots(tool: Tool) -> Vec<PathBuf> {
         }
         TranscriptDiscovery::PiSessions => pi_session_roots(),
         TranscriptDiscovery::OmpSessions => omp_session_roots(),
+        TranscriptDiscovery::PrimeSessions => prime_session_roots(),
         TranscriptDiscovery::OpenCodeDatabase | TranscriptDiscovery::KiloDatabase => Vec::new(),
     }
 }
